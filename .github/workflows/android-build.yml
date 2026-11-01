@@ -1,0 +1,26 @@
+name: Android Build
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build debug APK
+        run: |
+          G=$(find . -name gradlew | head -n1)
+          if [ -z "$G" ]; then
+            echo "gradlew nahi mila"
+            ls -R | head -50
+            exit 1
+          fi
+          cd "$(dirname "$G")"
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-android-apk
+          path: '**/build/outputs/apk/debug/*.apk'
