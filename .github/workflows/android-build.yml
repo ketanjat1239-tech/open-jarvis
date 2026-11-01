@@ -9,17 +9,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Build debug APK
-        run: |
-          G=$(find . -name gradlew | head -n1)
-          if [ -z "$G" ]; then
-            echo "gradlew nahi mila"
-            ls -R | head -50
-            exit 1
-          fi
-          cd "$(dirname "$G")"
-          chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - run: gradle assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-android-apk
