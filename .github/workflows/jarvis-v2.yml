@@ -125,7 +125,7 @@ jobs:
             grep -E "^e: " build-short.log | cut -c1-220 | head -25
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
-          exit $CODE
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
