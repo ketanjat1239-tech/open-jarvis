@@ -1,4 +1,4 @@
-name: KAI APK Builder V3
+name: KAI APK Builder
 
 on:
   workflow_dispatch:
@@ -11,13 +11,9 @@ permissions:
 
 jobs:
   build:
-    name: Build KAI Android APK
+    name: Build KAI APK
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout Repository
@@ -29,69 +25,41 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Gradle 8.2
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.2'
 
-      - name: Prepare Android SDK
-        shell: bash
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
-            -name sdkmanager -type f | head -n 1)
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found"
-            exit 1
-          fi
-
-          echo "Using: $SDKMANAGER"
-
-          yes | "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" --licenses || true
-
-          "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-      - name: Check Project Files
+      - name: Check Project
         run: |
           test -f settings.gradle
           test -f build.gradle
           test -f app/build.gradle
-          echo "Project verified"
+          echo "Project files found"
 
-      - name: Build Debug APK
+      - name: Build APK
         run: |
-          gradle --no-daemon :app:assembleDebug
+          gradle --no-daemon clean :app:assembleDebug
 
       - name: Verify APK
         run: |
           APK="app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -f "$APK" ]; then
-            echo "APK not generated"
-            exit 1
-          fi
+          test -f "$APK"
+          echo "APK generated successfully"
           ls -lh "$APK"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: KAI-Android-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 7
-
-      - name: Upload Failure Logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: KAI-Build-Failure-Logs
-          path: |
-            app/build/reports/
-            app/build/outputs/logs/
-          if-no-files-found: ignore
-          retention-days: 7
+          path: app/build/outputs
