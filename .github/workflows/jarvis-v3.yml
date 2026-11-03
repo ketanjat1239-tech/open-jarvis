@@ -1,0 +1,159 @@
+name: Jarvis V3
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+      - name: Patch and build
+        run: |
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          kotlin.code.style=official
+          EOF
+          sed -i "s/kotlinCompilerExtensionVersion '1.5.5'/kotlinCompilerExtensionVersion '1.5.4'/" app/build.gradle
+          grep -q "com.google.android.material:material" app/build.gradle || sed -i "/constraintlayout:constraintlayout:2.1.4'/a\    implementation 'com.google.android.material:material:1.11.0'" app/build.gradle
+          python3 - <<'PY'
+          import re, pathlib
+          base = pathlib.Path('app/src/main/java/com/openjarvis')
+
+          # 1) AutomationDao: Room needs an entity, not a class with a sealed field
+          db = base / 'automation' / 'AutomationDB.kt'
+          s = db.read_text()
+          s, n = re.subn(r'@Dao\s+interface AutomationDao \{.*?\n\}\n', '', s, count=1, flags=re.S)
+          print('automation dao removed:', n)
+          db.write_text(s)
+          (base / 'automation' / 'AutomationDao.kt').write_text('''package com.openjarvis.automation
+
+          import androidx.room.Dao
+          import androidx.room.Insert
+          import androidx.room.OnConflictStrategy
+          import androidx.room.Query
+          import androidx.room.Update
+
+          @Dao
+          abstract class AutomationDao {
+              @Query("SELECT * FROM automations ORDER BY name")
+              abstract suspend fun getAllEntities(): List<AutomationEntity>
+
+              @Query("SELECT * FROM automations WHERE id = :id")
+              abstract suspend fun getEntityById(id: String): AutomationEntity?
+
+              @Insert(onConflict = OnConflictStrategy.REPLACE)
+              abstract suspend fun insertEntity(entity: AutomationEntity)
+
+              @Update
+              abstract suspend fun updateEntity(entity: AutomationEntity)
+
+              @Query("DELETE FROM automations WHERE id = :id")
+              abstract suspend fun delete(id: String)
+
+              suspend fun getAll(): List<AutomationManager.Automation> =
+                  getAllEntities().map { it.toAutomation() }
+
+              suspend fun getById(id: String): AutomationManager.Automation? =
+                  getEntityById(id)?.toAutomation()
+
+              suspend fun insert(automation: AutomationManager.Automation) =
+                  insertEntity(automation.toEntity())
+
+              suspend fun update(automation: AutomationManager.Automation) =
+                  updateEntity(automation.toEntity())
+          }
+
+          private fun AutomationManager.Automation.toEntity(): AutomationEntity {
+              var type = "daily"
+              var hour = 0
+              var minute = 0
+              var dow = 0
+              var interval = 0L
+              when (val s = schedule) {
+                  is AutomationManager.AutomationSchedule.Daily -> {
+                      type = "daily"; hour = s.hour; minute = s.minute
+                  }
+                  is AutomationManager.AutomationSchedule.Weekly -> {
+                      type = "weekly"; dow = s.dayOfWeek; hour = s.hour; minute = s.minute
+                  }
+                  is AutomationManager.AutomationSchedule.Interval -> {
+                      type = "interval"; interval = s.intervalMs
+                  }
+                  is AutomationManager.AutomationSchedule.Once -> {
+                      type = "once"; interval = s.atMs
+                  }
+              }
+              return AutomationEntity(
+                  id = id, name = name, command = command,
+                  scheduleType = type, scheduleHour = hour, scheduleMinute = minute,
+                  scheduleDayOfWeek = dow, scheduleIntervalMs = interval,
+                  enabled = enabled, lastRun = lastRun, lastResult = lastResult, runCount = runCount
+              )
+          }
+
+          private fun AutomationEntity.toAutomation(): AutomationManager.Automation {
+              val s: AutomationManager.AutomationSchedule = when (scheduleType) {
+                  "weekly" -> AutomationManager.AutomationSchedule.Weekly(scheduleDayOfWeek, scheduleHour, scheduleMinute)
+                  "interval" -> AutomationManager.AutomationSchedule.Interval(scheduleIntervalMs)
+                  "once" -> AutomationManager.AutomationSchedule.Once(scheduleIntervalMs)
+                  else -> AutomationManager.AutomationSchedule.Daily(scheduleHour, scheduleMinute)
+              }
+              return AutomationManager.Automation(
+                  id = id, name = name, command = command, schedule = s,
+                  enabled = enabled, lastRun = lastRun, lastResult = lastResult, runCount = runCount
+              )
+          }
+          ''')
+
+          # 2) TaskNodeDao: unused :command parameter
+          tn = base / 'graphify' / 'nodes' / 'TaskNodeDao.kt'
+          t = tn.read_text()
+          t, m = re.subn(r'@Query\("SELECT \* FROM task_nodes ORDER BY timestamp DESC LIMIT :limit"\)(\s+suspend fun getTasksByCommand)',
+                         r'@Query("SELECT * FROM task_nodes WHERE command LIKE :command ORDER BY timestamp DESC LIMIT :limit")\1', t)
+          print('taskdao fixed:', m)
+          tn.write_text(t)
+
+          # 3) MCPClient: broken okhttp RequestBody.create calls
+          f = base / 'mcp' / 'MCPClient.kt'
+          s = f.read_text()
+          pat = re.compile(r'\.post\(okhttp3\.RequestBody\.create\(\s*"application/json"\.toByteArray\(\)\.to okhttp3\.MediaType\.get\("application/json"\),\s*requestBody\s*\)\)')
+          s, n = pat.subn('.post(requestBody.toRequestBody("application/json".toMediaType()))', s)
+          print('mcp post fixed:', n)
+          s = s.replace('import okhttp3.Request\n', 'import okhttp3.Request\nimport okhttp3.MediaType.Companion.toMediaType\nimport okhttp3.RequestBody.Companion.toRequestBody\n', 1)
+          f.write_text(s)
+
+          # 4) AgentCore: missing closing brace, bad label, wrong parameter name
+          f = base / 'agent' / 'AgentCore.kt'
+          s = f.read_text()
+          s = s.replace('return@taskMutex.withLock', 'return@withLock')
+          s = s.replace('\n        }\n    }\n\n    suspend fun testConnection', '\n        }\n        }\n    }\n\n    suspend fun testConnection', 1)
+          s = s.replace('cleanCommand = cleanCommand,', 'command = cleanCommand,')
+          f.write_text(s)
+          PY
+          set +e
+          gradle assembleDebug --console=plain > build.log 2>&1
+          CODE=$?
+          sed -E 's#/home/runner/work/open-jarvis/open-jarvis/##g' build.log > build-short.log
+          {
+            echo "## Build exit code: $CODE"
+            echo '```'
+            grep -A12 "What went wrong" build-short.log | head -30
+            grep -E "^e: " build-short.log | cut -c1-220 | head -25
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+          exit $CODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jarvis-build-log
+          path: build-short.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-android-apk
+          path: '**/build/outputs/apk/debug/*.apk'
